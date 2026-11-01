@@ -1,0 +1,65 @@
+# Plan morning-digest § 3–4 (ADR 0003). Builds the preview in CI and deploys it to GitHub Pages,
+# so the page never lands in the repo. The marker comes from the repo secret LANE_MARKER, so it
+# is masked in run logs. Run with with_marker=true for review (§ 3), then with_marker=false to
+# take it off the same link (§ 4).
+name: preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      with_marker:
+        description: Put the lane marker (secret LANE_MARKER) in the banner. Off = "no marker set".
+        type: boolean
+        default: false
+      night:
+        description: Night to preview
+        required: false
+        default: '2026-10-28'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: pnpm install
+      - name: Save the page as one HTML file
+        env:
+          MARKER: ${{ inputs.with_marker && secrets.LANE_MARKER || '' }}
+          NIGHT: ${{ inputs.night }}
+        run: |
+          printf 'LANE_ID=lane-07\nLANE_MARKER=%s\nPORT=8787\n' "$MARKER" > .env
+          pnpm start > /tmp/rig.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8787/health > /dev/null && break; sleep 1; done
+          mkdir -p _site
+          curl -sf "localhost:8787/digest/$NIGHT" -o _site/index.html
+          kill %1
+          if grep -q '<span class="marker">no marker set</span>' _site/index.html; then echo "banner: no marker set"; else echo "banner: marker set"; fi
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
